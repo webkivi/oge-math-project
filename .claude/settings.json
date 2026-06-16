@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/run_keeper.sh",
+            "args": [],
+            "statusMessage": "keeper.py: проверяю CSV"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/run_validator.sh",
+            "args": [],
+            "statusMessage": "validator.py: проверяю FSM/спеку"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/run_tests_gate.sh",
+            "args": [],
+            "statusMessage": "pytest: гейт перед коммитом"
+          }
+        ]
+      }
+    ]
+  }
+}
