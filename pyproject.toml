@@ -1,0 +1,32 @@
+[project]
+name = "oge-math-backend"
+version = "0.1.0"
+description = "Бэкенд адаптивной платформы микро-обучения (ОГЭ математика), роль «ученик»"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "sqlalchemy>=2.0.36",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "black>=24.0",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["backend/tests"]
+addopts = "-q"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
