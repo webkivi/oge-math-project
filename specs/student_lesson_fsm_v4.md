@@ -19,7 +19,7 @@
 | D-3 | Логика «передышки» (streak freeze): 1 в неделю, но когда именно активируется — автоматически или ученик нажимает кнопку? | Влияет на FSM-переход `streak_freeze_apply`. Спека принимает: **автоматически** — система применяет передышку при первом пропуске, если лимит не исчерпан. |
 | D-4 | Утренняя разминка (R3 / review_queue): запускается строго в 08:00 или при первом входе в день? | Влияет на архитектуру push + scheduler. Спека принимает: push в 08:00, но разминка доступна при любом входе до конца учебного дня. |
 | D-5 | Что показывать ученику, если он открывает PWA без интернета в момент прохождения урока (не закэшированный контент)? | Офлайн-режим service worker — отдельная спека. Здесь: если контент не в кэше — показать заглушку «нет соединения» без потери прогресса. |
-| D-6 | **[БЛОКЕР 152-ФЗ] grade=8 может означать возраст <14 лет.** По 152-ФЗ ст.9 ч.1 согласие на обработку ПД для лиц до 14 лет даёт родитель/опекун, а не сам ребёнок. Продуктовое решение фаундера: (а) ограничить регистрацию grade≥9, либо (б) добавить верификацию возраста (например, подтверждение от родителя через ссылку). | Полноценная реализация grade=8 откладывается до закрытия этой развилки. **В production-среде до закрытия D-6 фаундером guard регистрации ограничен: grade IN (9, 10, 11). grade=8 доступно только в test/staging среде.** До решения: в production регистрация grade=8 блокируется на уровне guard; в staging — допускается с предупреждением. |
+| D-6 | **[ЗАКРЫТА 2026-06-17] grade=8 → возраст <14 → согласие на ПД даёт законный представитель (152-ФЗ ст.9 ч.1).** Продуктовое решение фаундера: **жёсткий гейт grade=8 в production** (вариант «а» — регистрация только grade≥9). Реализовано в [specs/student_registration_fsm_v2.md](student_registration_fsm_v2.md), состояние `gate_grade8`: grade=8 в production не создаёт аккаунт ученика курса (тёплый экран «возвращайся в сентябре 9-го»). | Закрыта. Production guard регистрации = `grade IN (9,10,11)`. grade=8 в production — жёсткий гейт (User не создаётся). staging grade=8 — dev-only тест-аффорданс с предупреждением, не продуктовое поведение. Полная поддержка grade=8 с согласием представителя — отдельная задача (Z-1 в reg_v2). |
 
 ---
 
@@ -71,7 +71,7 @@ stateDiagram-v2
     [*] --> unregistered
 
     unregistered --> onboarding : evt_open_pwa
-    onboarding --> registered : evt_submit_registration [name присутствует AND grade 9..11 в prod / 8..11 в staging AND pd_consent=true]
+    onboarding --> registered : evt_submit_registration [name присутствует AND grade IN (9,10,11) prod AND pd_consent=true]
     onboarding --> unregistered : evt_cancel_registration
     onboarding --> unregistered : evt_delete_account [удаление до завершения регистрации]
 
@@ -258,7 +258,7 @@ transitions:
   - from: onboarding
     event: evt_submit_registration
     to: registered
-    guard: "name присутствует AND grade IN (9,10,11) в production / grade IN (8,9,10,11) в staging AND pd_consent=true; при grade=8 в staging — предупреждение подтверждено (D-6 открыта)"
+    guard: "name присутствует AND grade IN (9,10,11) AND pd_consent=true"  # D-6 закрыта 2026-06-17: grade=8 — жёсткий гейт в production (reg_v2 gate_grade8, User не создаётся). staging grade=8 — dev-only тест-аффорданс с предупреждением, не продуктовый guard
 
   - from: onboarding
     event: evt_cancel_registration
@@ -446,13 +446,13 @@ transitions:
     event: evt_lesson_complete
     to: course_complete
     guard: "все 27 уроков имеют Progress.status=passed (проверка ПОСЛЕ записи текущего урока как passed)"
-    # side-effect: записать Progress.status=passed; обновить Streak; если passed_attempt_1 — добавить interval 1/3/7/14/30 дней в review_queue; если passed_attempt_2 — interval-записи уже добавлены при evt_main_correct_attempt2, дублирования нет; evt_lesson_complete только подтверждает статус passed
+    # side-effect: записать Progress.status=passed; обновить DailySession.lessons_completed (инкремент Streak — в состоянии streak_update, не на этом переходе); если passed_attempt_1 — добавить interval 1/3/7/14/30 дней в review_queue; если passed_attempt_2 — interval-записи уже добавлены при evt_main_correct_attempt2, дублирования нет; evt_lesson_complete только подтверждает статус passed
 
   - from: lesson_final
     event: evt_lesson_complete
     to: repeat_1h_pending
     guard: "НЕ все 27 уроков имеют Progress.status=passed"
-    # side-effect: записать Progress.status=passed; обновить Streak; запланировать R1 (1ч), R2 (~21:00); добавить interval 1/3/7/14/30 в review_queue (если passed_attempt_1); если passed_attempt_2 — interval-записи уже добавлены при evt_main_correct_attempt2, дублирования нет
+    # side-effect: записать Progress.status=passed; обновить DailySession.lessons_completed (инкремент Streak — в состоянии streak_update, не на этом переходе); запланировать R1 (1ч), R2 (~21:00); добавить interval 1/3/7/14/30 в review_queue (если passed_attempt_1); если passed_attempt_2 — interval-записи уже добавлены при evt_main_correct_attempt2, дублирования нет
 
   - from: lesson_final
     event: evt_cancel_lesson
@@ -1089,7 +1089,7 @@ permissions:
 |-----|-------|----------|-----------|
 | 1 | Ученик | Открывает PWA по ссылке | Система: `evt_open_pwa` → состояние `onboarding` |
 | 2 | Система | Показывает экран регистрации: поля «Как тебя зовут?» (никнейм) и «В каком ты классе?» (выбор 9–11 в production; 8–11 в staging); показывает ссылку на Политику обработки персональных данных; показывает чекбокс «Я даю согласие на обработку ПД» (обязателен) | Экран регистрации отображён |
-| 2а | Система | В staging: если ученик выбирает класс «8» — отображает предупреждение: «Курс рассчитан на 9–11 классы; для 8 класса часть тем может быть рановата. Продолжить?» (D-6 открыта). В production: grade=8 недоступен для выбора. | Предупреждение показано (staging) или опция скрыта (production) |
+| 2а | Система | В staging: если ученик выбирает класс «8» — отображает предупреждение: «Курс рассчитан на 9–11 классы; для 8 класса часть тем может быть рановата. Продолжить?» (staging dev-режим; D-6 закрыта в prod). В production: grade=8 недоступен для выбора (жёсткий гейт). | Предупреждение показано (staging) или опция скрыта (production) |
 | 3 | Ученик | Вводит никнейм «Иван», выбирает класс «9», ставит галочку согласия на ПД | Форма заполнена; кнопка «Начать» активна |
 | 4 | Ученик | Нажимает «Начать» | `evt_submit_registration` |
 | 5 | Система | Проверяет: name не пустое, grade в допустимом диапазоне, pd_consent=true; бэкенд проверяет уникальный constraint (имя+время создания) для идемпотентности; фронтенд блокирует кнопку после первого нажатия | Валидация пройдена |
@@ -1277,7 +1277,7 @@ permissions:
 | EC-15 | correct_answer в CSV — строчная буква ('a' вместо 'A') | keeper.py блокирует; движок не получает невалидный CSV |
 | EC-16 | Дабл-клик на кнопке «Начать» при регистрации | Фронтенд блокирует кнопку после первого нажатия; бэкенд использует unique constraint на (name, created_at с точностью до секунды) или idempotency key; дублирующий аккаунт не создаётся |
 | EC-17 | Ученик открывает PWA после закрытия браузера на этапе lesson_failed (без подтверждения) | При открытии PWA: fsm_service читает StudentProfile.fsm_state из БД; если fsm_state=lesson_failed И Progress.status=in_progress И main_question_attempts==2 → fsm_service автоматически генерирует evt_lesson_fail_confirmed; урок переводится в failed_today без участия пользователя |
-| EC-18 | grade=8 при регистрации в production | Guard отклоняет: grade=8 недоступен в production до закрытия D-6. В staging — показывает предупреждение, требует явного подтверждения |
+| EC-18 | grade=8 при регистрации в production | Guard отклоняет: grade=8 недоступен в production (жёсткий гейт, D-6 закрыта 2026-06-17 → reg_v2 gate_grade8). В staging — показывает предупреждение, требует явного подтверждения (dev-only) |
 | EC-19 | Ученик открывает PWA и review_queue непуста, но нажимает «Пропустить разминку» | Guard: evt_warmup_skip [review_queue непуста AND ученик явно нажал «Пропустить»] → lesson_select; разминка не проводится, запросы в queue остаются с теми же due_date |
 | EC-20 | Ученик в состоянии repeat_evening_active в 23:59 (evt_day_end) | Scheduler выставляет DailySession.missed_day_end=true; streak_update откладывается. При оценке streak: reviews_completed засчитывается=1 только если evt_repeat_evening_answered был получен до 23:59; если не завершён — reviews_completed=0 для данного дня |
 | EC-21 | Ученик завершил курс (course_complete) и хочет удалить аккаунт | Два пути: (а) evt_open_app → registered → evt_delete_account → unregistered; (б) напрямую evt_delete_account из course_complete → unregistered. Оба поддержаны FSM |
@@ -1409,4 +1409,4 @@ oge-math-project/
 
 ---
 
-*Спека v4 закрывает все существенные замечания по ревью А4 v3. Открытая развилка D-6 (152-ФЗ, grade=8) зафиксирована с production-guard. Роли родитель/учитель/репетитор, мессенджер-адаптеры — отдельные спеки после валидации ученической поверхности.*
+*Спека v4 закрывает все существенные замечания по ревью А4 v3. Развилка D-6 (152-ФЗ, grade=8) ЗАКРЫТА 2026-06-17 жёстким гейтом в production (реализация — reg_v2, состояние gate_grade8). Роли родитель/учитель/репетитор, мессенджер-адаптеры — отдельные спеки после валидации ученической поверхности.*
