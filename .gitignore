@@ -19,6 +19,8 @@ dist/
 # Secrets — никогда в репо
 *.secret
 .env*
+# шаблон без секретов — трекается (CLAUDE.md §6, v4 §7)
+!.env.example
 secrets/
 tokens.txt
 
