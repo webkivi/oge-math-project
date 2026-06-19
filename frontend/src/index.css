@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Дизайн-токены А6 §1 — источник истины значений (tailwind.config.ts маппит их на
+   утилиты). Имена переменных — как в А6 (--bg-canvas, --text-primary, …). */
+:root {
+  /* §1.1 Цвет */
+  --bg-canvas: #f7f5f1;
+  --bg-surface: #ffffff;
+  --bg-sunken: #efebe4;
+  --text-primary: #1f2933;
+  --text-secondary: #52606d;
+  --text-muted: #616a75;
+  --primary: #2c6e73;
+  --primary-hover: #235a5e;
+  --primary-active: #1c494c;
+  --correct: #2e7d52;
+  --correct-bg: #e3f1e8;
+  --correct-text: #1b5235;
+  --trap: #b5731a;
+  --trap-bg: #fbefd9;
+  --trap-text: #7a4d12;
+  --border-interactive: #8c8478;
+  --border-subtle: #dad4cb;
+  --disabled-bg: #e1ddd6;
+  --disabled-text: #8a9099;
+  --focus-ring: #1c494c;
+  --destructive: #b23b3b;
+
+  /* §1.2 Типографика — системный санс-стек (без веб-шрифта) */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+}
+
+body {
+  margin: 0;
+  /* Базовый кегль 17px (А6 §1.2) — в px, чтобы не сдвигать 4px-шкалу отступов (rem). */
+  font-size: 17px;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}

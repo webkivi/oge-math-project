@@ -1,0 +1,20 @@
+{
+  "name": "ОГЭ Математика — на тройку",
+  "short_name": "ОГЭ Математика",
+  "description": "Готовимся к ОГЭ по математике на тройку — по 15 минут в день.",
+  "lang": "ru",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F7F5F1",
+  "theme_color": "#2C6E73",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
