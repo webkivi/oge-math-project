@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react'
 
-import { Gallery } from './dev/Gallery'
+import { Onboarding } from './pages/Onboarding'
 
 /**
  * Базовый layout ученической PWA (А6 §1.3): одна колонка, mobile-first, контентная
- * ширина 440px по центру, боковые поля 16px. Экраны регистрации (пункт 4) заменят
- * демо-галерею внутри этого каркаса.
+ * ширина 440px по центру, боковые поля 16px. Сейчас внутри — поток регистрации
+ * (пункт 4). Демо-галерея компонентов осталась в src/dev/Gallery.tsx как dev-артефакт.
  */
 function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -20,7 +20,7 @@ function AppShell({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <AppShell>
-      <Gallery />
+      <Onboarding />
     </AppShell>
   )
 }
