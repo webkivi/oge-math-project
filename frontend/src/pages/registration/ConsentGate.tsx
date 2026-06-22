@@ -1,5 +1,5 @@
 import { Button } from '../../components/Button'
-import { Checkbox } from '../../components/Checkbox'
+// TODO[before-pilot]: вернуть import { Checkbox } — БЛОКЕР, 152-ФЗ (см. ниже)
 import { InfoBanner } from '../../components/InfoBanner'
 import { PolicyLink } from '../../components/PolicyLink'
 import { ScreenHeading } from '../../components/ScreenHeading'
@@ -23,7 +23,8 @@ export function ConsentGate({ reg }: { reg: UseRegistration }) {
         <PolicyLink href={reg.policyUrl ?? '#'} available={reg.policyAvailable}>
           {ru.reg.consent.policyLink}
         </PolicyLink>
-        <Checkbox
+        {/* TODO[before-pilot]: вернуть согласие ПД — БЛОКЕР перед пилотом, 152-ФЗ. Сейчас отключено для UX-теста фаундера. */}
+        {/* <Checkbox
           checked={reg.consent}
           disabled={!reg.policyAvailable}
           onCheckedChange={reg.setConsent}
@@ -34,7 +35,7 @@ export function ConsentGate({ reg }: { reg: UseRegistration }) {
           <p className="text-caption text-trap-text">
             {ru.reg.consent.policyUnavailable}
           </p>
-        )}
+        )} */}
         {reg.error && (
           <p role="alert" className="text-caption text-trap-text">
             {reg.error}

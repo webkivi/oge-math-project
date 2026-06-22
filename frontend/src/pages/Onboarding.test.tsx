@@ -43,13 +43,15 @@ function stubFetch(registrationStatus: number) {
   return fetchMock
 }
 
+// TODO[before-pilot]: вернуть клик по checkbox после возврата согласия ПД (152-ФЗ)
 async function walkToConsentGrade9(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByRole('textbox'), 'Иван')
   await user.click(screen.getByRole('button', { name: 'Дальше' }))
   await user.click(screen.getByRole('radio', { name: '9 класс' }))
-  const checkbox = await screen.findByRole('checkbox')
-  await waitFor(() => expect(checkbox).toBeEnabled())
-  await user.click(checkbox)
+  // Чекбокс согласия ПД временно отключён — ждём загрузку политики (canSubmit)
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Начать' })).toBeEnabled(),
+  )
 }
 
 describe('Onboarding — поток регистрации', () => {
@@ -79,6 +81,8 @@ describe('Onboarding — поток регистрации', () => {
       expect(init).toBeDefined()
       const headers = init!.headers as Record<string, string>
       expect(headers['Idempotency-Key']).toBeTruthy()
+      // TODO[before-pilot]: вернуть чекбокс → pd_consent_checked берётся из consent state (не hardcode true).
+      // Также добавить тест RC-03: бэкенд отклоняет pd_consent_checked=false (422).
       expect(JSON.parse(init!.body as string)).toMatchObject({
         name: 'Иван',
         grade: 9,

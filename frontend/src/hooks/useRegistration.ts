@@ -129,14 +129,15 @@ export function useRegistration(): UseRegistration {
     dispatch({ type: 'gate_dismiss' })
   }, [dispatch])
 
+  // TODO[before-pilot]: вернуть согласие ПД — БЛОКЕР перед пилотом, 152-ФЗ. Сейчас отключено для UX-теста фаундера.
+  // Оригинал: consent && policyAvailable && policyVersion !== null
   const canSubmit = useMemo(
     () =>
       name.trim().length > 0 &&
       grade !== null &&
-      consent &&
       policyAvailable &&
       policyVersion !== null,
-    [name, grade, consent, policyAvailable, policyVersion],
+    [name, grade, policyAvailable, policyVersion],
   )
 
   const submit = useCallback(async () => {
@@ -149,7 +150,8 @@ export function useRegistration(): UseRegistration {
           name: name.trim(),
           grade,
           ogeprep_answer: ogeprepAnswer,
-          pd_consent_checked: consent,
+          // TODO[before-pilot]: вернуть consent вместо true — БЛОКЕР, 152-ФЗ
+          pd_consent_checked: true,
           policy_version_shown: policyVersion,
         },
         sessionId.current,
@@ -176,7 +178,7 @@ export function useRegistration(): UseRegistration {
     name,
     grade,
     ogeprepAnswer,
-    consent,
+    // TODO[before-pilot]: вернуть consent в deps вместе с pd_consent_checked — 152-ФЗ
     policyVersion,
     dispatch,
     refreshPolicy,
