@@ -40,7 +40,7 @@ def test_load_real_lesson_1_1():
     messages = load_lesson(LESSON_1_1)
     assert len(messages) >= 10
     first = messages[0]
-    assert first.lesson_id == "1"
+    assert first.lesson_id == "1_1"  # уникальный lesson_id (api §3.4-bis)
     assert first.stage == "theory"
     assert "<" in first.text  # HTML-разметка сохранена
 

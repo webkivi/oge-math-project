@@ -67,6 +67,53 @@ MAX_MAIN_QUESTION_ATTEMPTS: Final[int] = (
 # submit, не результатом внешнего вызова → NOT NULL-колонка всегда заполнена.
 FIRST_LESSON_ID: Final[str] = "1_1"
 
+# --- Манифест курса: 27 упорядоченных lesson_id (spec student_lesson_api_v1 §3.3) ---
+# Порядок = программа курса (блоки 1–6, Brain §2.4: 9+4+4+2+4+4 = 27). Источник
+# секвенирования для guard'ов lesson_select (next_unpassed_lesson / all_lessons_passed).
+# Единое пространство lesson_id для COURSE_MANIFEST / Progress.lesson_id / контента
+# csv_loader (§3.4-bis). Блок 1 (1_1..1_9) — контент есть; блоки 2–6 форвард-объявлены
+# (контент ещё не произведён — зона A1/контент-продюсера).
+COURSE_MANIFEST: Final[tuple[str, ...]] = (
+    "1_1",
+    "1_2",
+    "1_3",
+    "1_4",
+    "1_5",
+    "1_6",
+    "1_7",
+    "1_8",
+    "1_9",  # Блок 1 — Практические задачи
+    "2_1",
+    "2_2",
+    "2_3",
+    "2_4",  # Блок 2 — Арифметика
+    "3_1",
+    "3_2",
+    "3_3",
+    "3_4",  # Блок 3 — Уравнения и графики
+    "4_1",
+    "4_2",  # Блок 4 — Дополнения
+    "5_1",
+    "5_2",
+    "5_3",
+    "5_4",  # Блок 5 — Геометрия
+    "6_1",
+    "6_2",
+    "6_3",
+    "6_4",  # Блок 6 — Финал
+)
+
+# Инварианты манифеста (spec §3.3) — проверяются при импорте, рассинхрон ловится сразу:
+assert (
+    len(COURSE_MANIFEST) == TOTAL_LESSONS
+), "COURSE_MANIFEST: длина должна быть == TOTAL_LESSONS"
+assert (
+    COURSE_MANIFEST[0] == FIRST_LESSON_ID
+), "COURSE_MANIFEST[0] должен == FIRST_LESSON_ID"
+assert len(set(COURSE_MANIFEST)) == len(
+    COURSE_MANIFEST
+), "COURSE_MANIFEST: lesson_id должны быть уникальны"
+
 # --- Cookie сессии (reg api §6.1) ---
 SESSION_COOKIE_NAME: Final[str] = "oge_session"
 
