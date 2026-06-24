@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,13 @@ from sqlalchemy.orm import Session as OrmSession
 
 from backend import config
 from backend.db.database import get_db
-from backend.db.models import Progress, ProgressStatus
+from backend.db.models import (
+    Progress,
+    ProgressStatus,
+    ReviewQueue,
+    ReviewReason,
+    StudentProfile,
+)
 from backend.db.models import Session as AuthSession
 from backend.engine import lesson_content as lc
 from backend.engine.csv_loader import LessonMessage
@@ -80,6 +87,9 @@ def _lesson() -> list[LessonMessage]:
         ),
         _m("fn", "final"),
         _m("fl", "lesson_failed"),
+        _m("r1q", "repeat_1h", correct="A", a="Да", b="Нет", fa="ok", fb="no"),
+        _m("r2q", "repeat_evening", correct="A", a="Да", b="Нет", fa="ok", fb="no"),
+        _m("r3q", "repeat_morning", correct="A", a="Да", b="Нет", fa="ok", fb="no"),
     ]
 
 
@@ -323,3 +333,152 @@ def test_current_resume(client: TestClient):
     assert r.status_code == 200
     assert r.json()["message"]["message_id"] == "th2"  # resume на сохранённой позиции
     assert "feedback" not in r.json()  # resume не несёт результата ответа
+
+
+# --- Дневной поток: E5 open, E4 day-hub, E6 warmup, E12 repeat (1b-ii) ---
+
+
+def _set_state(db: OrmSession, state: str) -> StudentProfile:
+    profile = db.execute(select(StudentProfile)).scalars().one()
+    profile.fsm_state = state
+    db.commit()
+    return profile
+
+
+def test_open_day_enters_daily_start(client: TestClient, db: OrmSession):
+    _set_state(db, "registered")
+    body = client.post("/api/day/open").json()
+    assert body["fsm_state"] == "daily_start"
+    assert body["view"] == "day_hub"
+    assert body["day"]["has_lesson_today"] is True
+    assert body["day"]["warmup_available"] is False  # нет due-повторений
+    assert body["day"]["streak_days"] == 0  # Streak не создан
+
+
+def test_warmup_skip_chains_into_lesson(client: TestClient, db: OrmSession):
+    _set_state(db, "daily_start")
+    body = client.post("/api/day/warmup", json={"action": "skip"}).json()
+    # skip → lesson_select → start_lesson (R3 hook-проскок) → lesson_theory
+    assert body["fsm_state"] == "lesson_theory"
+    assert body["view"] == "lesson_message"
+    assert body["message"]["message_id"] == "th1"
+
+
+def test_day_hub_session_end_normalizes_daily_done(client: TestClient, db: OrmSession):
+    _set_state(db, "daily_done")
+    body = client.get("/api/day").json()
+    assert body["fsm_state"] == "registered"  # §6.1 session_end-нормализация
+    assert body["view"] == "day_hub"
+
+
+def test_day_hub_daily_blocked_not_normalized(client: TestClient, db: OrmSession):
+    _set_state(db, "daily_blocked")
+    body = client.get("/api/day").json()
+    assert body["fsm_state"] == "daily_blocked"  # выход только evt_next_day (scheduler)
+    assert body["view"] == "day_blocked"
+
+
+def test_warmup_answer_then_complete_into_lesson(client: TestClient, db: OrmSession):
+    profile = _set_state(db, "daily_start")
+    db.add(
+        ReviewQueue(
+            user_id=profile.user_id,
+            lesson_id="1_1",
+            reason=ReviewReason.INTERVAL_1D,
+            due_date=datetime.now(UTC).date(),
+            done=False,
+        )
+    )
+    db.commit()
+    start = client.post("/api/day/warmup", json={"action": "start"}).json()
+    assert start["fsm_state"] == "morning_warmup"
+    assert start["view"] == "warmup"
+    assert start["message"]["message_id"] == "r3q"  # R3-вопрос урока 1_1
+    # Единственное due → ответ исчерпывает разминку → complete → урок.
+    body = client.post(
+        "/api/day/warmup",
+        json={"action": "answer", "message_id": "r3q", "selected": "A"},
+    ).json()
+    assert body["fsm_state"] == "lesson_theory"
+    card = db.execute(select(ReviewQueue)).scalars().one()
+    assert card.done is True  # отвеченная R3-карточка засчитана (R2-№2)
+
+
+def test_warmup_completes_after_third_answer_leaves_fourth_due(
+    client: TestClient, db: OrmSession
+):
+    """Счётчик «3 вопроса» (§2.5): 4 due-карточки, исчерпание срабатывает на 3-й
+    ответе — 4-я карточка ОСТАЁТСЯ due (не сожжена, не отвечена)."""
+    profile = _set_state(db, "daily_start")
+    today = datetime.now(UTC).date()
+    db.add_all(
+        [
+            ReviewQueue(
+                user_id=profile.user_id,
+                lesson_id="1_1",
+                reason=ReviewReason.INTERVAL_1D,
+                due_date=today,
+                done=False,
+            )
+            for _ in range(4)
+        ]
+    )
+    db.commit()
+    client.post("/api/day/warmup", json={"action": "start"})
+    for i in range(3):
+        body = client.post(
+            "/api/day/warmup",
+            json={"action": "answer", "message_id": "r3q", "selected": "A"},
+        ).json()
+        if i < 2:
+            assert body["fsm_state"] == "morning_warmup"
+        else:
+            assert body["fsm_state"] == "lesson_theory"  # 3-й ответ → complete → урок
+    cards = list(db.execute(select(ReviewQueue)).scalars())
+    assert sum(1 for c in cards if c.done) == 3
+    assert sum(1 for c in cards if not c.done) == 1  # 4-я НЕ выдана и НЕ отвечена
+
+
+def test_warmup_skip_inside_does_not_burn_unanswered_due(
+    client: TestClient, db: OrmSession
+):
+    """R2-№2: «пропустить» ВНУТРИ morning_warmup не сжигает невыданную due-карточку —
+    её due_date/done остаются как были, она всплывёт в следующей разминке."""
+    profile = _set_state(db, "morning_warmup")
+    today = datetime.now(UTC).date()
+    db.add(
+        ReviewQueue(
+            user_id=profile.user_id,
+            lesson_id="1_1",
+            reason=ReviewReason.INTERVAL_1D,
+            due_date=today,
+            done=False,
+        )
+    )
+    db.commit()
+    body = client.post("/api/day/warmup", json={"action": "skip"}).json()
+    assert body["fsm_state"] == "lesson_theory"  # skip → warmup_complete → урок
+    card = db.execute(select(ReviewQueue)).scalars().one()
+    assert card.done is False  # невыданный/неотвеченный due НЕ сожжён
+    assert card.due_date == today
+
+
+def test_repeat_answer_wrong_stage_message_is_stale(client: TestClient, db: OrmSession):
+    """Анти-stale §2.2: в repeat_1h_active нельзя ответить вопросом ДРУГОЙ стадии
+    того же урока (например training tq1) — это 409 stale_message."""
+    _set_state(db, "repeat_1h_active")
+    r = client.post(
+        "/api/repeat/answer", json={"message_id": "tq1", "selected": "A", "seq": 0}
+    )
+    assert r.status_code == 409
+    assert r.json()["error"] == "stale_message"
+
+
+def test_repeat_answer_r1(client: TestClient, db: OrmSession):
+    _set_state(db, "repeat_1h_active")
+    body = client.post(
+        "/api/repeat/answer", json={"message_id": "r1q", "selected": "A", "seq": 0}
+    ).json()
+    assert body["feedback"]["is_correct"] is True  # судится для feedback
+    assert body["fsm_state"] == "repeat_evening_pending"  # evt_repeat_1h_answered
+    assert body["view"] == "repeat_pending"  # репит-state, не lesson-view (правка №2)

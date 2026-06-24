@@ -36,6 +36,9 @@ STAGE_MAIN_QUESTION = "main_question"
 STAGE_MAIN_QUESTION_BACKUP = "main_question_backup"
 STAGE_FINAL = "final"
 STAGE_LESSON_FAILED = "lesson_failed"
+STAGE_REPEAT_1H = "repeat_1h"
+STAGE_REPEAT_EVENING = "repeat_evening"
+STAGE_REPEAT_MORNING = "repeat_morning"
 
 # LessonProgress (§4.5/§4.5-R3): шкала из 5 стадий-этапов; при наличии hook — 6.
 PROGRESS_STAGES = (

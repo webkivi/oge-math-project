@@ -19,16 +19,23 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from backend import config
-from backend.db.models import Progress, ProgressStatus, StudentProfile
+from backend.db.models import (
+    DailySession,
+    Progress,
+    ProgressStatus,
+    ReviewQueue,
+    Streak,
+    StudentProfile,
+)
 from backend.engine import lesson_content as lc
 from backend.engine import lesson_engine as fsm
-from backend.engine.csv_loader import LessonMessage
+from backend.engine.csv_loader import InvalidCSVError, LessonMessage
 from backend.engine.lesson_engine import Event, SideEffect, State
 from backend.services import review_service
 
@@ -64,6 +71,7 @@ class LessonOutcome:
     resumable: bool = (
         False  # §4.6: registered + in_progress (после cancel) → resume-CTA
     )
+    day: dict | None = None  # §4.1 day-блок (E4/E5): streak/warmup_available/has_lesson
 
 
 # Деривация «Дальше» (E9, §1.3): fsm_state → событие (одношаговые не-вопросные стадии).
@@ -105,6 +113,8 @@ _PROGRESS_STEP_BASE: dict[State, int] = {
     State.LESSON_FINAL: 5,
 }
 # Side-effects, отложенные к scheduler/streak-срезу (исполняются там, не здесь).
+# SHOW_* — это UX-подсказки самопетель (countdown/prompt/blocked); render их несёт
+# через view, отдельного БД-эффекта нет → no-op здесь.
 _DEFERRED_EFFECTS = {
     SideEffect.SCHEDULE_REPEATS,
     SideEffect.APPLY_STREAK_UPDATE,
@@ -113,7 +123,6 @@ _DEFERRED_EFFECTS = {
     SideEffect.SHOW_R1_COUNTDOWN,
     SideEffect.SHOW_EVENING_PROMPT,
     SideEffect.SHOW_BLOCKED_MESSAGE,
-    SideEffect.UPDATE_LAST_ACTIVE,
 }
 
 
@@ -343,6 +352,7 @@ def _outcome(
     *,
     progress: Progress | None = None,
     resumable: bool = False,
+    day: dict | None = None,
 ) -> LessonOutcome:
     state = _state(profile)
     step, total = _progress_indicator(messages, state)
@@ -366,6 +376,7 @@ def _outcome(
         seq=seq,
         effects=effects,
         resumable=resumable,
+        day=day,
     )
 
 
@@ -577,6 +588,262 @@ def cancel(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOutc
     profile.fsm_state = result.new_state.value
     db.commit()
     return _outcome(profile, [], None, result.effects)
+
+
+# --- Дневной поток: вход, хаб, разминка, повторения (E5/E4/E6/E12) ---
+
+_SESSION_END_STATES = {State.REVIEW_QUEUE_SCHEDULED, State.DAILY_DONE}
+_REPEAT_EVENT: dict[State, Event] = {
+    State.REPEAT_1H_ACTIVE: Event.REPEAT_1H_ANSWERED,
+    State.REPEAT_EVENING_ACTIVE: Event.REPEAT_EVENING_ANSWERED,
+}
+# Ожидаемая стадия CSV по активному repeat-состоянию (анти-stale §2.2 шаг 2 для E12:
+# без этой сверки message_id из ДРУГОЙ стадии той же lesson_id был бы принят как R1/R2).
+_REPEAT_STAGE: dict[State, str] = {
+    State.REPEAT_1H_ACTIVE: lc.STAGE_REPEAT_1H,
+    State.REPEAT_EVENING_ACTIVE: lc.STAGE_REPEAT_EVENING,
+}
+_WARMUP_MAX_QUESTIONS = 3  # A6 §3.2: «3 коротких interleaved-вопроса»
+
+
+def _today() -> date:
+    return datetime.now(UTC).date()
+
+
+def _due_reviews(db: DbSession, user_id: int) -> list[ReviewQueue]:
+    """Невыполненные due-повторения (review_queue, due<=today, не done), по порядку."""
+    return list(
+        db.execute(
+            select(ReviewQueue)
+            .where(
+                ReviewQueue.user_id == user_id,
+                ReviewQueue.done.is_(False),
+                ReviewQueue.due_date <= _today(),
+            )
+            .order_by(ReviewQueue.id)
+        ).scalars()
+    )
+
+
+def _day_block(db: DbSession, user_id: int) -> dict:
+    """day-блок render (§4.1): тихий streak, доступность разминки, наличие урока."""
+    streak = db.get(Streak, user_id)
+    nxt, failed = _first_non_passed(_progress_by_lesson(db, user_id))
+    return {
+        "streak_days": streak.current_streak if streak is not None else 0,
+        "warmup_available": bool(_due_reviews(db, user_id)),
+        "has_lesson_today": nxt is not None and not failed,
+    }
+
+
+def open_day(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOutcome:
+    """E5: вход в день — registered --evt_open_app--> daily_start (§4.2).
+
+    «Идемпотентен в пределах дня» (§1.2): v4 не имеет перехода `evt_open_app` из
+    состояний ПОСЛЕ `daily_start` (движок дал бы UnknownTransitionError → 409).
+    Транспортно: если день уже открыт (state != registered), повторный E5 НЕ
+    диспатчит событие — возвращает текущее состояние с day-блоком (без 409).
+
+    missed_day_end (отложенный streak_update, §7) — зона scheduler-среза; здесь его
+    никто не выставляет → всегда False (прямой daily_start).
+    """
+    profile = _load_profile(db, user_id)
+    state = _state(profile)
+    if state != State.REGISTERED:
+        return _outcome(profile, [], None, (), day=_day_block(db, user_id))
+    result = _dispatch(state, Event.OPEN_APP, fsm.with_context(missed_day_end=False))
+    profile.fsm_state = result.new_state.value
+    profile.last_active_at = datetime.now(UTC)  # UPDATE_LAST_ACTIVE (inline)
+    db.commit()
+    return _outcome(profile, [], None, result.effects, day=_day_block(db, user_id))
+
+
+def day_hub(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOutcome:
+    """E4: render дневного состояния + ленивая session_end-нормализация (§6.1).
+
+    Из review_queue_scheduled/daily_done сервер деривит evt_session_end → registered;
+    daily_blocked НЕ нормализуется (выход только evt_next_day, scheduler).
+    """
+    profile = _load_profile(db, user_id)
+    state = _state(profile)
+    if state in _SESSION_END_STATES:
+        result = _dispatch(state, Event.SESSION_END, fsm.with_context())
+        profile.fsm_state = result.new_state.value
+        db.commit()
+    return _outcome(profile, [], None, (), day=_day_block(db, user_id))
+
+
+def warmup(
+    db: DbSession,
+    repo: lc.LessonRepository,
+    user_id: int,
+    *,
+    action: str,
+    message_id: str | None = None,
+    selected: str | None = None,
+) -> LessonOutcome:
+    """E6: утренняя разминка (§2.5). action: start | skip | answer."""
+    profile = _load_profile(db, user_id)
+    state = _state(profile)
+    if action == "start":
+        result = _dispatch(
+            state,
+            Event.WARMUP_AVAILABLE,
+            fsm.with_context(review_due=bool(_due_reviews(db, user_id))),
+        )
+        profile.fsm_state = result.new_state.value
+        db.commit()
+        return _warmup_render(db, repo, profile, user_id)
+    if action == "skip":
+        if state == State.DAILY_START:
+            ctx = fsm.with_context(
+                review_due=bool(_due_reviews(db, user_id)), user_skipped_warmup=True
+            )
+            result = _dispatch(state, Event.WARMUP_SKIP, ctx)
+        else:  # morning_warmup: досрочный «пропустить» → warmup_complete (R2-№2)
+            result = _dispatch(state, Event.WARMUP_COMPLETE, fsm.with_context())
+        profile.fsm_state = result.new_state.value
+        db.commit()
+        return start_lesson(
+            db, repo, user_id
+        )  # lesson_select → урок/тупик (§2.5 транзит)
+    if action == "answer":
+        return _warmup_answer(db, repo, profile, user_id, message_id, selected)
+    raise LessonError("invalid_warmup_action", http_status=422, field="action")
+
+
+def repeat_answer(
+    db: DbSession,
+    repo: lc.LessonRepository,
+    user_id: int,
+    *,
+    message_id: str,
+    selected: str,
+) -> LessonOutcome:
+    """E12: ответ в R1/R2 — судим для feedback, переход по факту (§4.8/§2.3).
+
+    Seq-дедуп §5.2 здесь НЕ реализован: repeat_*_active сейчас достижим только
+    scheduler-событиями (evt_1h_elapsed/evt_evening_time, отложены), HTTP-доступности
+    для живого ученика нет в этом срезе — дедуп вернётся со scheduler-срезом, когда
+    появится реальный конкурентный доступ. Осознанное решение, не пропуск.
+    """
+    profile = _load_profile(db, user_id)
+    state = _state(profile)
+    event = _REPEAT_EVENT.get(state)
+    if event is None:
+        raise LessonError("wrong_action_for_stage", http_status=409)
+    messages = repo.messages(profile.current_lesson_id)
+    message = lc.find(messages, message_id)
+    # Анти-stale (§2.2 шаг 2): message_id должен быть ИМЕННО ожидаемой repeat-стадии
+    # текущего state, не любым вопросом этого урока (training/main и т.п.).
+    if message is None or message.stage != _REPEAT_STAGE[state]:
+        raise LessonError("stale_message", http_status=409)
+    if not lc.is_valid_option(message, selected):
+        raise LessonError("invalid_option", http_status=422, field="selected")
+    judgement = lc.judge(message, selected)  # только feedback-render (§2.3)
+    result = _dispatch(state, event, fsm.with_context())
+    if SideEffect.ENQUEUE_INTERVAL_REVIEWS in result.effects:
+        review_service.enqueue_interval_reviews(db, user_id, profile.current_lesson_id)
+    profile.fsm_state = result.new_state.value
+    db.commit()
+    return _outcome(profile, messages, None, result.effects, judgement)
+
+
+# --- Помощники разминки (E6) ---
+
+
+def _warmup_question(
+    db: DbSession, repo: lc.LessonRepository, user_id: int
+) -> tuple[ReviewQueue | None, LessonMessage | None]:
+    """Текущий R3-вопрос: первое due-повторение, чей урок имеет стадию repeat_morning.
+
+    Уроки, не прошедшие keeper (InvalidCSVError) или без R3, пропускаются (F-03)."""
+    for item in _due_reviews(db, user_id):
+        try:
+            messages = repo.messages(item.lesson_id)
+        except (lc.LessonNotFoundError, InvalidCSVError):
+            continue
+        msg = lc.first_of_stage(messages, lc.STAGE_REPEAT_MORNING)
+        if msg is not None:
+            return item, msg
+    return None, None
+
+
+def _warmup_session(db: DbSession, user_id: int, today: date) -> DailySession:
+    """DailySession за сегодня (get-or-create) — серверный счётчик разминки (§2.5,
+    транзиентное поле сессии дня, НЕ новая колонка)."""
+    ds = db.execute(
+        select(DailySession).where(
+            DailySession.user_id == user_id, DailySession.date == today
+        )
+    ).scalar_one_or_none()
+    if ds is None:
+        # default'ы модели применяются на flush; задаём явно (счётчик — int сразу).
+        ds = DailySession(
+            user_id=user_id,
+            date=today,
+            lessons_completed=0,
+            reviews_completed=0,
+            morning_warmup_done=False,
+            missed_day_end=False,
+        )
+        db.add(ds)
+    return ds
+
+
+def _complete_warmup(
+    db: DbSession, repo: lc.LessonRepository, profile: StudentProfile, user_id: int
+) -> LessonOutcome:
+    """evt_warmup_complete → lesson_select → сразу в урок (§2.5: render цели)."""
+    result = _dispatch(_state(profile), Event.WARMUP_COMPLETE, fsm.with_context())
+    profile.fsm_state = result.new_state.value
+    db.commit()
+    return start_lesson(db, repo, user_id)
+
+
+def _warmup_render(
+    db: DbSession, repo: lc.LessonRepository, profile: StudentProfile, user_id: int
+) -> LessonOutcome:
+    """Render текущего R3-вопроса (view warmup); если due пусто — complete → урок."""
+    _item, msg = _warmup_question(db, repo, user_id)
+    if msg is None:
+        return _complete_warmup(db, repo, profile, user_id)
+    return _outcome(profile, [], msg, ())
+
+
+def _warmup_answer(
+    db: DbSession,
+    repo: lc.LessonRepository,
+    profile: StudentProfile,
+    user_id: int,
+    message_id: str | None,
+    selected: str | None,
+) -> LessonOutcome:
+    """Судит R3-вопрос (только feedback, §2.5), помечает карточку, ведёт счётчик 3."""
+    if _state(profile) != State.MORNING_WARMUP:
+        raise LessonError("wrong_action_for_stage", http_status=409)
+    if message_id is None or selected is None:
+        raise LessonError("invalid_option", http_status=422, field="selected")
+    item, msg = _warmup_question(db, repo, user_id)
+    if msg is None or msg.message_id != message_id:
+        raise LessonError("stale_message", http_status=409)
+    if not lc.is_valid_option(msg, selected):
+        raise LessonError("invalid_option", http_status=422, field="selected")
+    judgement = lc.judge(msg, selected)  # FSM-событие не диспатчим (§2.5)
+    now = datetime.now(UTC)
+    item.done = True  # R2-№2: засчитываем ТОЛЬКО фактически отвеченный R3-вопрос
+    session = _warmup_session(db, user_id, now.date())
+    session.reviews_completed += 1
+    session.morning_warmup_done = True
+    db.flush()  # чтобы следующий _due_reviews не вернул уже отвеченную карточку
+    # Исчерпание: ответили 3 вопроса ИЛИ больше нет due → warmup_complete → урок.
+    if session.reviews_completed >= _WARMUP_MAX_QUESTIONS:
+        return _complete_warmup(db, repo, profile, user_id)
+    _next_item, next_msg = _warmup_question(db, repo, user_id)
+    if next_msg is None:
+        return _complete_warmup(db, repo, profile, user_id)
+    db.commit()
+    return _outcome(profile, [], next_msg, (), judgement)
 
 
 # --- Внутренние помощники операций ---

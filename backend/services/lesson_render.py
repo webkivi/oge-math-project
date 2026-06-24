@@ -14,6 +14,7 @@ from backend.services.fsm_service import LessonOutcome
 # fsm_state → view для безмессаджных/хабовых и репит-состояний (§4.9), когда нет ответа.
 _STATE_VIEW: dict[str, str] = {
     "registered": "day_hub",
+    "daily_start": "day_hub",
     "review_queue_scheduled": "day_hub",
     "daily_done": "day_done",
     "daily_blocked": "day_blocked",
@@ -46,21 +47,22 @@ _STATE_ACTIONS: dict[str, list[str]] = {
 
 
 def _view(outcome: LessonOutcome) -> str:
-    """Дискриминатор экрана (§4.9): по исходу при feedback, иначе по state."""
+    """Дискриминатор экрана (§4.9). Хаб/разминка/репит-состояния — по state (даже с
+    feedback); только lesson-вопрос-стадии вне `_STATE_VIEW` — по исходу."""
     state = outcome.fsm_state
     judgement = outcome.judgement
-    if judgement is not None:
-        if judgement.is_correct:
-            return "lesson_final" if state == "lesson_final" else "lesson_question"
-        if state == "lesson_failed":
-            return "lesson_failed"
-        return "lesson_feedback"  # training-wrong / main-wrong#1 — единый view (R1-№6)
     if outcome.resumable and outcome.message is not None:
         return (
             "lesson_message"  # §4.6 resume: registered+in_progress → урок, не day_hub
         )
     if state in _STATE_VIEW:
+        # warmup/day_hub/repeat_*/lesson_final/lesson_failed — приоритет над judgement:
+        # R3- и R1/R2-ответы несут feedback, но остаются на своём экране (§4.9).
         return _STATE_VIEW[state]
+    if (
+        judgement is not None
+    ):  # вопрос-стадии урока (training/main/backup/theory_review)
+        return "lesson_question" if judgement.is_correct else "lesson_feedback"
     msg = outcome.message
     if msg is not None and msg.is_question:
         return "lesson_question"
@@ -105,4 +107,6 @@ def serialize(outcome: LessonOutcome) -> dict:
         }
     if outcome.resumable:
         render["resumable"] = True  # §4.6: клиент показывает «Продолжить урок»
+    if outcome.day is not None:
+        render["day"] = outcome.day  # §4.1 day-блок (E4/E5)
     return render

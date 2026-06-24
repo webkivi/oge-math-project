@@ -62,6 +62,51 @@ class AnswerBody(BaseModel):
     seq: int
 
 
+class WarmupBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["start", "skip", "answer"]
+    message_id: str | None = None  # для action=answer (R3-вопрос)
+    selected: str | None = None
+    seq: int | None = None
+
+
+@router.get("/api/day")
+def day_hub(student: CurrentUser, db: Db, repo: Repo) -> dict:
+    """E4: render дневного состояния (хаб) + ленивая session_end-нормализация (§6.1)."""
+    return lesson_render.serialize(fsm_service.day_hub(db, repo, student.id))
+
+
+@router.post("/api/day/open")
+def day_open(student: CurrentUser, db: Db, repo: Repo) -> dict:
+    """E5: вход в день (registered → daily_start, §4.2)."""
+    return lesson_render.serialize(fsm_service.open_day(db, repo, student.id))
+
+
+@router.post("/api/day/warmup")
+def day_warmup(body: WarmupBody, student: CurrentUser, db: Db, repo: Repo) -> dict:
+    """E6: утренняя разминка R3 (start/skip/answer, §2.5)."""
+    return lesson_render.serialize(
+        fsm_service.warmup(
+            db,
+            repo,
+            student.id,
+            action=body.action,
+            message_id=body.message_id,
+            selected=body.selected,
+        )
+    )
+
+
+@router.post("/api/repeat/answer")
+def repeat_answer(body: AnswerBody, student: CurrentUser, db: Db, repo: Repo) -> dict:
+    """E12: ответ в R1/R2 (судим для feedback, переход по факту, §4.8)."""
+    return lesson_render.serialize(
+        fsm_service.repeat_answer(
+            db, repo, student.id, message_id=body.message_id, selected=body.selected
+        )
+    )
+
+
 @router.get("/api/lesson/current")
 def lesson_current(student: CurrentUser, db: Db, repo: Repo) -> dict:
     """E7: render текущего сохранённого сообщения (resume, EC-02)."""
