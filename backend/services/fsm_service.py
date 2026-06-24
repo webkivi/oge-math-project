@@ -59,7 +59,11 @@ class LessonOutcome:
     judgement: lc.Judgement | None  # при answer — итог судейства; иначе None
     progress_step: int | None  # LessonProgress.step (§4.5-R3); None вне шкалы
     progress_total: int | None
+    seq: int  # монотонный sequence-номер (§5.2 derived); клиент эхо-ит в next command
     effects: tuple[SideEffect, ...]  # для прозрачности/тестов
+    resumable: bool = (
+        False  # §4.6: registered + in_progress (после cancel) → resume-CTA
+    )
 
 
 # Деривация «Дальше» (E9, §1.3): fsm_state → событие (одношаговые не-вопросные стадии).
@@ -270,14 +274,64 @@ def _dispatch(state: State, event: Event, ctx: fsm.FSMContext) -> fsm.Transition
     """Диспатч движка с маппингом исключений на коды (§5.5)."""
     try:
         return fsm.dispatch(state, event, ctx)
-    except (fsm.UnknownTransitionError, fsm.GuardError) as exc:
+    except fsm.UnknownTransitionError as exc:
+        # действие недопустимо в этой стадии (§5.5: wrong_action_for_stage, 409)
         raise LessonError("wrong_action_for_stage", http_status=409) from exc
+    except fsm.GuardError as exc:
+        # переход есть, но guard не прошёл — рассинхрон ctx (§5.5: guard_failed, 409)
+        raise LessonError("guard_failed", http_status=409) from exc
     except fsm.AmbiguousTransitionError as exc:  # pragma: no cover — дефект таблицы
-        raise LessonError("ambiguous_transition", http_status=500) from exc
+        raise LessonError("fsm_internal_error", http_status=500) from exc
 
 
 def _state(profile: StudentProfile) -> State:
     return State(profile.fsm_state)
+
+
+# Порядок состояний урока для монотонного seq (§5.2): дальше по уроку → больше.
+_STATE_ORDINAL: dict[State, int] = {
+    State.LESSON_HOOK: 0,
+    State.LESSON_THEORY: 1,
+    State.LESSON_EXAMPLE: 2,
+    State.LESSON_TRAINING: 3,
+    State.LESSON_MAIN_QUESTION: 4,
+    State.LESSON_THEORY_REVIEW: 5,
+    State.LESSON_MAIN_QUESTION_BACKUP: 6,
+    State.LESSON_FINAL: 7,
+    State.LESSON_FAILED: 8,
+}
+
+
+def _stage_index(messages: list[LessonMessage], message_id: str | None) -> int:
+    """Индекс message_id внутри своей стадии по порядку файла (§3.1)."""
+    cur = lc.find(messages, message_id) if message_id else None
+    if cur is None:
+        return 0
+    idx = 0
+    for m in messages:
+        if m.stage == cur.stage:
+            if m.message_id == message_id:
+                return idx
+            idx += 1
+    return 0
+
+
+def _compute_seq(
+    messages: list[LessonMessage],
+    state: State,
+    message_id: str | None,
+    attempts: int,
+    errors_for_current: int,
+) -> int:
+    """Монотонный seq, производный от позиции прохождения (§5.2; без version-колонки).
+
+    Растёт на каждый принятый command: смена стадии (ordinal), шаг внутри стадии
+    (индекс), попытка вопроса или ошибка тренировки (R2-№4). Веса разнесены
+    (индекс<100, attempts<10, errors<10) → seq монотонен и при возврате по return_X.
+    """
+    ordinal = _STATE_ORDINAL.get(state, 0)
+    index = _stage_index(messages, message_id)
+    return ordinal * 10000 + index * 100 + attempts * 10 + min(errors_for_current, 9)
 
 
 def _outcome(
@@ -286,9 +340,22 @@ def _outcome(
     message: LessonMessage | None,
     effects: tuple[SideEffect, ...],
     judgement: lc.Judgement | None = None,
+    *,
+    progress: Progress | None = None,
+    resumable: bool = False,
 ) -> LessonOutcome:
     state = _state(profile)
     step, total = _progress_indicator(messages, state)
+    current_mid = message.message_id if message else None
+    if current_mid is None and progress is not None:
+        current_mid = progress.current_message_id
+    attempts = progress.main_question_attempts if progress else 0
+    errors = (
+        progress.training_errors.get(current_mid, 0)
+        if (progress and current_mid)
+        else 0
+    )
+    seq = _compute_seq(messages, state, current_mid, attempts, errors)
     return LessonOutcome(
         fsm_state=profile.fsm_state,
         lesson_id=profile.current_lesson_id,
@@ -296,11 +363,44 @@ def _outcome(
         judgement=judgement,
         progress_step=step,
         progress_total=total,
+        seq=seq,
         effects=effects,
+        resumable=resumable,
     )
 
 
 # --- Публичные операции (вызываются роутерами 1b) ---
+
+
+def current(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOutcome:
+    """E7: render текущего сохранённого сообщения (resume EC-02; и идемпотентный §5.2).
+
+    Read-only: команд/мутаций нет. В уроке — message = current_message_id; иначе
+    (registered/хаб) — message=None. InvalidCSVError/LessonNotFoundError пробрасываются
+    (роутер мапит на 503/404, §5.5)."""
+    profile = _load_profile(db, user_id)
+    progress = db.execute(
+        select(Progress).where(
+            Progress.user_id == user_id,
+            Progress.lesson_id == profile.current_lesson_id,
+        )
+    ).scalar_one_or_none()
+    messages: list[LessonMessage] = []
+    message: LessonMessage | None = None
+    resumable = False
+    if progress is not None and progress.current_message_id is not None:
+        messages = repo.messages(profile.current_lesson_id)
+        message = lc.find(messages, progress.current_message_id)
+        # §4.6: registered + Progress.in_progress (после S-10 cancel) → resume-CTA,
+        # а не day_hub: клиент показывает «Продолжить урок» на сохранённой позиции.
+        resumable = (
+            profile.fsm_state == State.REGISTERED
+            and progress.status == ProgressStatus.IN_PROGRESS
+            and message is not None
+        )
+    return _outcome(
+        profile, messages, message, (), progress=progress, resumable=resumable
+    )
 
 
 def start_lesson(
@@ -354,7 +454,7 @@ def start_lesson(
     entry = lc.first_of_stage(messages, _STATE_STAGE[state])
     progress.current_message_id = entry.message_id if entry else None
     db.commit()
-    return _outcome(profile, messages, entry, result.effects)
+    return _outcome(profile, messages, entry, result.effects, progress=progress)
 
 
 def advance(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOutcome:
@@ -372,7 +472,7 @@ def advance(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOut
         if nxt is not None:
             progress.current_message_id = nxt.message_id
             db.commit()
-            return _outcome(profile, messages, nxt, ())
+            return _outcome(profile, messages, nxt, (), progress=progress)
 
     # Последний экран стадии → read-событие → следующая стадия.
     if state == State.LESSON_FINAL:
@@ -402,7 +502,7 @@ def advance(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOut
     if entry is not None:
         progress.current_message_id = entry.message_id
     db.commit()
-    return _outcome(profile, messages, entry, result.effects)
+    return _outcome(profile, messages, entry, result.effects, progress=progress)
 
 
 def answer(
@@ -455,7 +555,9 @@ def answer(
     if next_message is not None:
         progress.current_message_id = next_message.message_id
     db.commit()
-    return _outcome(profile, messages, next_message, result.effects, judgement)
+    return _outcome(
+        profile, messages, next_message, result.effects, judgement, progress=progress
+    )
 
 
 def cancel(db: DbSession, repo: lc.LessonRepository, user_id: int) -> LessonOutcome:

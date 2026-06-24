@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import os
+from pathlib import Path
 from typing import Final
 
 
@@ -113,6 +114,9 @@ assert (
 assert len(set(COURSE_MANIFEST)) == len(
     COURSE_MANIFEST
 ), "COURSE_MANIFEST: lesson_id должны быть уникальны"
+
+# --- Каталог контента уроков (CSV; читается движком, lesson api §3.4-bis) ---
+CONTENT_DIR: Final[Path] = Path(__file__).resolve().parents[1] / "content"
 
 # --- Cookie сессии (reg api §6.1) ---
 SESSION_COOKIE_NAME: Final[str] = "oge_session"
