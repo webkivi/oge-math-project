@@ -1,5 +1,5 @@
 import { useRegistration } from '../hooks/useRegistration'
-import { ru } from '../i18n/ru'
+import { LessonFlow } from './lesson/LessonFlow'
 import { ConsentGate } from './registration/ConsentGate'
 import { CourseMismatch } from './registration/CourseMismatch'
 import { GateGrade8 } from './registration/GateGrade8'
@@ -26,12 +26,9 @@ export function Onboarding() {
     case 'gate_grade8':
       return <GateGrade8 reg={reg} />
     case 'registered':
-      // Плейсхолдер: реальный переход в daily_start/первый урок — v4 (вне среза).
-      return (
-        <div className="flex flex-1 flex-col justify-center py-6">
-          <p className="text-lead text-ink">{ru.reg.done}</p>
-        </div>
-      )
+      // Стык с дневным потоком/уроком (v4 §7): LessonFlow сам откроет день (E5/E4)
+      // и продолжит с daily_start или с сохранённой точки прохождения.
+      return <LessonFlow />
     case 'unregistered':
     default:
       // Отмена/выход/гейт-dismiss. Тексты этого экрана-заглушки — на доработку А8.

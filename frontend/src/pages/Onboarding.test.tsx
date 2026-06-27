@@ -4,9 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Onboarding } from './Onboarding'
 
-// Мокаем глобальный fetch: E1 (pd-policy) и E3 (registration). status задаётся
-// per-test, чтобы проверить 201 (успех) и 422 (ошибка, остаёмся в consent).
+// Мокаем глобальный fetch: E1 (pd-policy), E3 (registration) и стык с дневным
+// потоком (E7/E4/E5, LessonFlow) — после 201 Onboarding передаёт управление
+// LessonFlow, который сразу бутстрапится (specs/student_lesson_api_v1.md §1.2).
+// status задаётся per-test, чтобы проверить 201 (успех) и 422 (ошибка, consent).
 function stubFetch(registrationStatus: number) {
+  const dayHubRender = (fsmState: string) => ({
+    fsm_state: fsmState,
+    view: 'day_hub',
+    message: null,
+    seq: 0,
+    next_actions: [],
+    day: { streak_days: 0, warmup_available: false, has_lesson_today: true },
+  })
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input)
     if (url.endsWith('/api/pd-policy')) {
@@ -34,6 +44,24 @@ function stubFetch(registrationStatus: number) {
           : { error: 'consent_required', field: 'pd_consent_checked' }
       return new Response(JSON.stringify(body), {
         status: registrationStatus,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url.endsWith('/api/lesson/current')) {
+      return new Response(JSON.stringify(dayHubRender('registered')), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url.endsWith('/api/day')) {
+      return new Response(JSON.stringify(dayHubRender('registered')), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url.endsWith('/api/day/open')) {
+      return new Response(JSON.stringify(dayHubRender('daily_start')), {
+        status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
@@ -71,7 +99,8 @@ describe('Onboarding — поток регистрации', () => {
       await walkToConsentGrade9(user)
       await user.click(screen.getByRole('button', { name: 'Начать' }))
 
-      expect(await screen.findByText(/Запускаем твой первый урок/)).toBeInTheDocument()
+      // Передача в LessonFlow: registered → (E7 day_hub) → E4/E5 → daily_start.
+      expect(await screen.findByText('Твой шаг на сегодня')).toBeInTheDocument()
 
       const submitCall = fetchMock.mock.calls.find(([url]) =>
         String(url).endsWith('/api/registration'),
@@ -105,7 +134,7 @@ describe('Onboarding — поток регистрации', () => {
       await user.click(screen.getByRole('button', { name: 'Начать' }))
 
       expect(await screen.findByRole('alert')).toBeInTheDocument()
-      expect(screen.queryByText(/Запускаем твой первый урок/)).not.toBeInTheDocument()
+      expect(screen.queryByText('Твой шаг на сегодня')).not.toBeInTheDocument()
       // Остаёмся на экране согласия — кнопка «Начать» на месте.
       expect(screen.getByRole('button', { name: 'Начать' })).toBeInTheDocument()
     })
