@@ -51,3 +51,7 @@ docker-compose.override.yml
 # Временные артефакты
 *.tmp
 *.bak
+
+# Handoff-буферы Claude Code <-> Codex
+docs/handoff_out.md
+docs/handoff_in.md
