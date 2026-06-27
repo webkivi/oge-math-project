@@ -15,6 +15,8 @@ interface AnswerButtonsProps {
   selectedLetter?: AnswerLetter | null
   status?: 'idle' | 'answered'
   isCorrect?: boolean
+  /** Блокирует выбор, пока ответ ещё в полёте к серверу (EC-01 анти-даблклик). */
+  disabled?: boolean
   onSelect: (letter: AnswerLetter) => void
 }
 
@@ -23,6 +25,7 @@ export function AnswerButtons({
   selectedLetter = null,
   status = 'idle',
   isCorrect = false,
+  disabled = false,
   onSelect,
 }: AnswerButtonsProps) {
   const answered = status === 'answered'
@@ -38,7 +41,7 @@ export function AnswerButtons({
             type="button"
             role="radio"
             aria-checked={isSelected}
-            disabled={answered}
+            disabled={answered || disabled}
             onClick={() => onSelect(option.letter)}
             className={[
               'flex min-h-12 w-full items-center gap-3 rounded-control border px-4 py-3 text-left text-option text-ink transition-colors',

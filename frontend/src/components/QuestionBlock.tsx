@@ -10,6 +10,8 @@ interface QuestionBlockProps {
   selectedLetter?: AnswerLetter | null
   status?: 'idle' | 'answered'
   isCorrect?: boolean
+  /** Блокирует выбор, пока ответ ещё в полёте к серверу (EC-01 анти-даблклик). */
+  disabled?: boolean
   onSelect: (letter: AnswerLetter) => void
 }
 
@@ -19,6 +21,7 @@ export function QuestionBlock({
   selectedLetter,
   status,
   isCorrect,
+  disabled,
   onSelect,
 }: QuestionBlockProps) {
   return (
@@ -32,6 +35,7 @@ export function QuestionBlock({
         selectedLetter={selectedLetter}
         status={status}
         isCorrect={isCorrect}
+        disabled={disabled}
         onSelect={onSelect}
       />
     </div>
