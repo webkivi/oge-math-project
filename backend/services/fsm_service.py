@@ -97,6 +97,12 @@ _STATE_STAGE: dict[State, str] = {
     State.LESSON_FINAL: lc.STAGE_FINAL,
     State.LESSON_FAILED: lc.STAGE_LESSON_FAILED,  # §4.5/§4.9: render-текст провала
 }
+# Обратная карта стадия → состояние (для resume, EC-02/S-10, см. _resume_state).
+# lesson_theory_review НЕ входит — её сообщения рендерятся со stage=theory, она
+# разрешается отдельно в _resume_state через main_question_attempts.
+_STAGE_TO_STATE: dict[str, State] = {
+    stage: state for state, stage in _STATE_STAGE.items()
+}
 _QUESTION_STATES = {
     State.LESSON_TRAINING,
     State.LESSON_MAIN_QUESTION,
@@ -161,6 +167,39 @@ def _get_or_create_progress(
     )
     db.add(progress)
     return progress
+
+
+def _resume_state(messages: list[LessonMessage], progress: Progress) -> State | None:
+    """Восстанавливает lesson_*-состояние по сохранённой позиции (EC-02/S-10).
+
+    evt_cancel_lesson переводит fsm_state в registered, но Progress.current_message_id
+    сохраняется (PERSIST_RESUMABLE_PROGRESS, api §4.6). Чтобы реальный повторный вход
+    (E8) продолжил с того же места, а не с начала урока, нужно определить исходное
+    lesson_*-состояние по сообщению. Стадия theory неоднозначна: её же рендерит
+    lesson_theory_review при возврате после wrong-attempt1 главного вопроса — это
+    разрешается через main_question_attempts (>=1 только после первой попытки).
+    Возвращает None, если current_message_id не найден в текущем контенте (битый
+    CSV/контент сменился между сессиями) — вызывающий код делает safe fallback (EC-08).
+    """
+    if progress.current_message_id is None:
+        return None
+    entry = lc.find(messages, progress.current_message_id)
+    if entry is None:
+        return None
+    if entry.stage == lc.STAGE_THEORY and progress.main_question_attempts >= 1:
+        return State.LESSON_THEORY_REVIEW
+    return _STAGE_TO_STATE.get(entry.stage)
+
+
+def _reset_progress_for_restart(progress: Progress, now: datetime) -> None:
+    """Нормализует stale resume-данные перед безопасным рестартом урока с начала."""
+    progress.status = ProgressStatus.IN_PROGRESS
+    progress.current_message_id = None
+    progress.main_question_attempts = 0
+    progress.training_errors = {}
+    progress.started_at = now
+    progress.completed_at = None
+    progress.passed_on_attempt = None
 
 
 # --- Манифест курса (§3.3): следующий незавершённый урок / все пройдены ---
@@ -418,7 +457,11 @@ def start_lesson(
     db: DbSession, repo: lc.LessonRepository, user_id: int
 ) -> LessonOutcome:
     """lesson_select → следующий незавершённый урок (§3.3). R3: при отсутствии hook
-    авто-проскок lesson_hook → lesson_theory[0] (§3.1-R3). Создаёт/находит Progress."""
+    авто-проскок lesson_hook → lesson_theory[0] (§3.1-R3). Создаёт/находит Progress.
+
+    Если урок уже IN_PROGRESS (после S-10 evt_cancel_lesson, §4.6/EC-02) — резюмирует
+    с сохранённой позиции (Progress.current_message_id) через _resume_state, НЕ
+    перезапуская урок с начала."""
     profile = _load_profile(db, user_id)
     now = datetime.now(UTC)
     by_lesson = _progress_by_lesson(db, user_id)
@@ -445,16 +488,34 @@ def start_lesson(
         db.commit()
         return _outcome(profile, [], None, result.effects)
 
+    messages = repo.messages(lesson_id)
+    progress = _get_or_create_progress(db, user_id, lesson_id, now)
+
+    if progress.status == ProgressStatus.IN_PROGRESS:
+        resumed = _resume_state(messages, progress)
+        if resumed is not None:
+            profile.fsm_state = resumed.value
+            profile.current_lesson_id = lesson_id
+            profile.last_active_at = now
+            entry = lc.find(messages, progress.current_message_id)
+            db.commit()
+            return _outcome(profile, messages, entry, (), progress=progress)
+        # Сохранённая позиция не найдена в контенте (битый CSV/контент сменился) —
+        # safe fallback ниже: обычный старт с начала (EC-08). fsm_state после
+        # evt_cancel_lesson — registered, не lesson_select (которое обычным
+        # вызывающим кодом гарантируется ДО start_lesson, §3.2); дисптачу ниже
+        # нужен именно lesson_select как источник evt_start_lesson.
+        _reset_progress_for_restart(progress, now)
+        profile.fsm_state = State.LESSON_SELECT.value
+
     # Старт урока: evt_start_lesson → lesson_hook.
     ctx = fsm.with_context(has_next_lesson=True, next_lesson_failed_today=False)
     result = _dispatch(_state(profile), Event.START_LESSON, ctx)
     profile.fsm_state = result.new_state.value
     profile.current_lesson_id = lesson_id
     profile.last_active_at = now
-    progress = _get_or_create_progress(db, user_id, lesson_id, now)
     if progress.status == ProgressStatus.NOT_STARTED:
         progress.status = ProgressStatus.IN_PROGRESS
-    messages = repo.messages(lesson_id)
 
     # R3-авто-проскок: hook-сообщения нет → сразу lesson_theory[0] (§3.1-R3).
     if not lc.has_hook(messages):

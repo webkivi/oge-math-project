@@ -284,6 +284,141 @@ def test_cancel_persists_resumable_progress(db):
     assert p.current_message_id == "th1"  # позиция сохранена (EC-02)
 
 
+def test_start_lesson_resumes_after_cancel(db):
+    """EC-02 round-trip: cancel сохраняет позицию (tq1), повторный start_lesson
+    резюмирует ОТТУДА, а не начинает урок заново с theory[0]."""
+    student, repo, _ = _start(db, _simple_lesson())
+    uid = student.id
+    fsm_service.advance(db, repo, uid)  # th1 -> th2 (multiscreen)
+    fsm_service.advance(db, repo, uid)  # th2 -> example (THEORY_READ)
+    out = fsm_service.advance(db, repo, uid)  # example -> training (EXAMPLE_READ)
+    assert out.fsm_state == "lesson_training" and out.message.message_id == "tq1"
+
+    cancel_out = fsm_service.cancel(db, repo, uid)
+    assert cancel_out.fsm_state == "registered"
+    p = _progress(db, uid)
+    assert p.status == ProgressStatus.IN_PROGRESS
+    assert p.current_message_id == "tq1"
+
+    resumed = fsm_service.start_lesson(db, repo, uid)
+    assert resumed.fsm_state == "lesson_training"
+    assert resumed.message.message_id == "tq1"
+    assert student.profile.current_lesson_id == "1_1"
+
+
+def test_start_lesson_resumes_theory_review_after_cancel(db):
+    """Стадия theory неоднозначна — её же рендерит lesson_theory_review при возврате
+    после wrong-attempt1 главного вопроса. Резолвится через main_question_attempts,
+    а не как обычный lesson_theory (см. _resume_state)."""
+    student, repo, _ = _start(db, _simple_lesson())
+    uid = student.id
+    fsm_service.advance(db, repo, uid)  # th1 -> th2
+    fsm_service.advance(db, repo, uid)  # th2 -> example
+    fsm_service.advance(db, repo, uid)  # example -> training (tq1)
+    fsm_service.answer(
+        db, repo, uid, message_id="tq1", selected="A"
+    )  # -> main_question
+    out = fsm_service.answer(
+        db, repo, uid, message_id="mq", selected="B"
+    )  # wrong attempt1
+    assert out.fsm_state == "lesson_theory_review"
+    assert out.message.message_id == "th1"  # return_b урока
+
+    fsm_service.cancel(db, repo, uid)
+    p = _progress(db, uid)
+    assert p.current_message_id == "th1"
+    assert p.main_question_attempts == 1
+
+    resumed = fsm_service.start_lesson(db, repo, uid)
+    assert resumed.fsm_state == "lesson_theory_review"  # НЕ lesson_theory
+    assert resumed.message.message_id == "th1"
+
+
+def test_start_lesson_fallback_resets_stale_progress_if_saved_message_missing(db):
+    """EC-08 fallback: missing current_message_id не тащит stale-счётчики дальше."""
+    student, repo, _ = _start(db, _simple_lesson())
+    uid = student.id
+    fsm_service.advance(db, repo, uid)  # th1 -> th2
+    fsm_service.advance(db, repo, uid)  # th2 -> example
+    fsm_service.advance(db, repo, uid)  # example -> training (tq1)
+    fsm_service.answer(
+        db, repo, uid, message_id="tq1", selected="B"
+    )  # training error #1
+    fsm_service.answer(
+        db, repo, uid, message_id="tq1", selected="A"
+    )  # -> main_question
+    out = fsm_service.answer(
+        db, repo, uid, message_id="mq", selected="B"
+    )  # wrong attempt1
+    assert out.fsm_state == "lesson_theory_review"
+
+    fsm_service.cancel(db, repo, uid)
+    stale = _progress(db, uid)
+    assert stale.current_message_id == "th1"
+    assert stale.main_question_attempts == 1
+    assert stale.training_errors == {"tq1": 1}
+
+    changed_repo = FakeRepo(
+        {
+            "1_1": [
+                _m("thX", "theory"),
+                _m("thY", "theory"),
+                _m("ex1", "example"),
+                _m(
+                    "tq1",
+                    "training",
+                    correct="A",
+                    a="Да",
+                    b="Нет",
+                    fa="ok",
+                    fb="no",
+                    rb="thX",
+                ),
+                _m(
+                    "mq",
+                    "main_question",
+                    correct="A",
+                    a="Да",
+                    b="Нет",
+                    fa="ok",
+                    fb="no",
+                    rb="thX",
+                ),
+                _m(
+                    "bq",
+                    "main_question_backup",
+                    correct="A",
+                    a="Да",
+                    b="Нет",
+                    fa="ok",
+                    fb="no",
+                ),
+                _m("fn", "final"),
+                _m("fl", "lesson_failed"),
+            ]
+        }
+    )
+
+    restarted = fsm_service.start_lesson(db, changed_repo, uid)
+    assert restarted.fsm_state == "lesson_theory"
+    assert restarted.message.message_id == "thX"
+
+    fresh = _progress(db, uid)
+    assert fresh.current_message_id == "thX"
+    assert fresh.main_question_attempts == 0
+    assert fresh.training_errors == {}
+
+    fsm_service.advance(db, changed_repo, uid)  # thX -> thY
+    fsm_service.advance(db, changed_repo, uid)  # thY -> example
+    fsm_service.advance(db, changed_repo, uid)  # example -> training
+    fsm_service.answer(
+        db, changed_repo, uid, message_id="tq1", selected="A"
+    )  # -> main_question
+    final = fsm_service.answer(db, changed_repo, uid, message_id="mq", selected="A")
+    assert final.fsm_state == "lesson_final"
+    assert final.message.message_id == "fn"
+
+
 # --- Ошибки доступа/состояния ---
 
 
