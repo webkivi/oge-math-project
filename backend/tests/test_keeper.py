@@ -3,7 +3,8 @@
 Покрывают каждую проверку контракта (Methodology §3.7/§10–11, CLAUDE.md §3):
 байтовые (BOM/CRLF), структурные (19 колонок, lesson_id без точек, HTML-парность,
 эмодзи whitelist/blacklist), стадии, correct_answer, return_X. Плюс регрессия на
-реальном контенте: все content/*.csv должны быть PASS (1.9 — WARN мета-урока).
+реальном контенте: все content/*.csv (включая 1.9, принят 2026-06-28) должны быть
+PASS; 1.9 несёт WARN мета-урока (нет стадии example — ожидаемо для архетипа).
 """
 
 from __future__ import annotations
@@ -33,27 +34,24 @@ def _errors(tmp_path, rows, **kwargs) -> list[str]:
 LESSON_1_9 = CONTENT_DIR / "Контент_урок_1_9.csv"
 
 
-def _content_files_except_1_9() -> list[str]:
-    return sorted(p for p in glob.glob(str(CONTENT_DIR / "*.csv")) if "1_9" not in p)
+def _content_files() -> list[str]:
+    return sorted(glob.glob(str(CONTENT_DIR / "*.csv")))
 
 
-@pytest.mark.parametrize("path", _content_files_except_1_9())
+@pytest.mark.parametrize("path", _content_files())
 def test_real_content_passes_keeper(path):
-    """Реальные CSV (1.1–1.8 + напоминания) — PASS. 1.9 — отдельно (нарушает §3.3)."""
+    """Все реальные CSV (1.1–1.9 + напоминания) — PASS. Блок 1 закрыт контентно."""
     res = keeper.check_csv(Path(path))
     assert res.ok, f"{path}: {res.errors}"
 
 
-def test_legacy_lesson_1_9_fails_on_answer_distribution():
-    """Урок 1.9 (тренировка A,A,A) нарушает §3.3 — FAIL (легаси, чинит Продюсер).
-
-    Это ожидаемо: 1.9 — легаси-каркас (Brain «Контент 1.3–1.9: чистить»).
-    keeper обязан ловить распределение букв (§8.2).
-    """
+def test_lesson_1_9_keeps_meta_lesson_warning():
+    """Урок 1.9 (мета-урок, принят 2026-06-28) — PASS, но несёт WARN об отсутствии
+    стадии example: ожидаемо для архетипа «мета» (нет отдельного примера —
+    задачи вперемешку и есть содержание урока)."""
     res = keeper.check_csv(LESSON_1_9)
-    assert not res.ok
-    assert any("§3.3" in e for e in res.errors)
-    assert any("example" in w for w in res.warnings)  # WARN мета-урока сохраняется
+    assert res.ok
+    assert any("example" in w for w in res.warnings)
 
 
 def test_baseline_valid_lesson_is_clean(tmp_path):

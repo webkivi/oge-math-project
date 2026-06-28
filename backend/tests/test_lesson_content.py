@@ -137,20 +137,13 @@ def test_repository_lazy_load_tolerates_keeper_fail(tmp_path):
 
 
 def test_repository_real_content_block1_loads():
-    """Реальный content/: 1_1..1_8 индексируются и грузятся (keeper PASS)."""
+    """Реальный content/: 1_1..1_9 индексируются и грузятся (keeper PASS, Блок 1
+    закрыт контентно 2026-06-28)."""
     repo = LessonRepository(CONTENT_DIR)
-    for n in range(1, 9):
+    for n in range(1, 10):
         lesson_id = f"1_{n}"
         assert repo.has(lesson_id)
         assert repo.messages(lesson_id)
-
-
-def test_repository_real_content_1_9_indexed_but_keeper_fail():
-    """1_9 — легаси keeper-FAIL (§3.3): индексируется, но load падает."""
-    repo = LessonRepository(CONTENT_DIR)
-    assert repo.has("1_9")
-    with pytest.raises(InvalidCSVError):
-        repo.messages("1_9")
 
 
 # --- Секвенирование (§3.1) ---

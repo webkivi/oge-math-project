@@ -80,11 +80,11 @@ def test_load_lesson_warns_but_loads_when_only_warning(tmp_path, caplog):
     assert any("example" in rec.message for rec in caplog.records)
 
 
-def test_load_lesson_raises_on_legacy_1_9_distribution():
-    """1.9 нарушает §3.3 (тренировка A,A,A) → загрузчик отклоняет (легаси-контент)."""
-    with pytest.raises(InvalidCSVError) as exc:
-        load_lesson(LESSON_1_9)
-    assert any("§3.3" in e for e in exc.value.errors)
+def test_load_real_lesson_1_9():
+    """1.9 принят 2026-06-28 (§3.3 закрыт) — мета-урок грузится без InvalidCSVError."""
+    messages = load_lesson(LESSON_1_9)
+    assert len(messages) >= 10
+    assert messages[0].lesson_id == "1_9"
 
 
 def test_load_lessons_dir_skips_system_and_loads_lessons(tmp_path):
@@ -102,10 +102,49 @@ def test_load_lessons_dir_skips_system_and_loads_lessons(tmp_path):
     assert all(isinstance(v, list) and v for v in lessons.values())
 
 
-def test_load_lessons_dir_raises_on_invalid_lesson():
-    """Реальный content/ содержит легаси-урок 1.9 (§3.3) → fail-fast InvalidCSVError."""
+def test_load_lessons_dir_real_content_all_pass():
+    """Реальный content/ — все 9 уроков Блока 1 грузятся (1.9 принят 2026-06-28)."""
+    lessons = load_lessons_dir(CONTENT_DIR)
+    assert len(lessons) == 9
+    assert "Контент_урок_1_9" in lessons
+
+
+def test_load_lessons_dir_raises_on_invalid_lesson(tmp_path):
+    """Каталог с одним невалидным уроком (§3.3) → fail-fast InvalidCSVError."""
+    write_lesson_csv(tmp_path, valid_lesson_rows(), name="Контент_урок_ok.csv")
+    bad_rows = [
+        lesson_row("th1", "theory"),
+        lesson_row(
+            "tq1",
+            "training",
+            correct_answer="A",
+            option_a="Да",
+            option_b="Нет",
+            feedback_a="ok",
+            feedback_b="no",
+        ),
+        lesson_row(
+            "tq2",
+            "training",
+            correct_answer="A",
+            option_a="Да",
+            option_b="Нет",
+            feedback_a="ok",
+            feedback_b="no",
+        ),
+        lesson_row(
+            "tq3",
+            "training",
+            correct_answer="A",
+            option_a="Да",
+            option_b="Нет",
+            feedback_a="ok",
+            feedback_b="no",
+        ),
+    ]
+    write_lesson_csv(tmp_path, bad_rows, name="Контент_урок_bad.csv")
     with pytest.raises(InvalidCSVError):
-        load_lessons_dir(CONTENT_DIR)
+        load_lessons_dir(tmp_path)
 
 
 def test_load_lessons_dir_non_utf8_file_raises_invalid_csv(tmp_path):
