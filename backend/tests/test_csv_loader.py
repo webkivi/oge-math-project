@@ -103,9 +103,13 @@ def test_load_lessons_dir_skips_system_and_loads_lessons(tmp_path):
 
 
 def test_load_lessons_dir_real_content_all_pass():
-    """Реальный content/ — все 9 уроков Блока 1 грузятся (1.9 принят 2026-06-28)."""
+    """Реальный content/ — грузятся все lesson-CSV, системный файл не попадает в lessons."""
     lessons = load_lessons_dir(CONTENT_DIR)
-    assert len(lessons) == 9
+    expected = {
+        path.stem for path in CONTENT_DIR.glob("Контент_урок_*.csv") if path.is_file()
+    }
+    assert set(lessons) == expected
+    assert "Контент_напоминания" not in lessons
     assert "Контент_урок_1_9" in lessons
 
 

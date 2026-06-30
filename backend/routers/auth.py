@@ -15,16 +15,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session as DbSession
 from starlette.requests import Request
 
 from backend import config
-from backend.auth.deps import current_user_or_none
+from backend.auth.deps import current_user_or_none, require_student
 from backend.config import AppEnv
 from backend.db.database import get_db
+from backend.db.models import User
+from backend.services import account_service
 from backend.services import registration_service
 from backend.services.registration_service import RegistrationError
 
@@ -162,3 +164,22 @@ def register(
         "current_lesson_id": result.current_lesson_id,
         "next": "daily_start",
     }
+
+
+@router.delete("/api/account", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    response: Response,
+    student: Annotated[User, Depends(require_student)],
+    db: Annotated[DbSession, Depends(get_db)],
+) -> Response:
+    """Удалить аккаунт ученика и все связанные ПД (152-ФЗ, v4 §8)."""
+    account_service.delete_account(db, student)
+    response.delete_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
