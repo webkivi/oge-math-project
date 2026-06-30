@@ -24,7 +24,8 @@ CLAUDE.md §1).
 | --- | --- | --- |
 | `student_lesson_fsm_v4.md` | v4 | **CURRENT** — принята (validator PASS, А4 GO) |
 | `student_lesson_fsm_v3.md` / `v2` / `v1` | v3/v2/v1 | архив (superseded) |
-| `student_lesson_api_v1.md` | v1 | **CURRENT** — HTTP-эндпоинты E7–E11, render, sequence-echo (slice 1b-i) |
+| `student_lesson_api_v1.md` | v1 (R1+R2+R3) | **CURRENT** — HTTP-эндпоинты E7–E11, render, sequence-echo (slice 1b-i) |
+| `day_end_screen_v1.md` | v1 (R1+R2) | **CURRENT** — принята (А4 GO 2026-06-30, 3 раунда; validator неприменим по §0); поведенческо-транспортное расширение render-payload для view `day_done`/`day_blocked`/`course_complete` опциональным блоком `day_summary`; FSM не тронут, матрица прав не тронута, api v1 §4.1 расширен обратно-совместимо. Реализация — Mid-risk с UI после приёмки фаундером 6 продуктовых развилок (DE-1..DE-6) и 4 правок контракта данных |
 
 ## UI и тексты (ученик)
 
@@ -40,6 +41,25 @@ CLAUDE.md §1).
   устарела по факту (см. `student_registration_api_v1.md` шапка, правка №1
   ревью А4 v2). Текст reg_v2 пока не правлен; ждёт Brain-дельты через
   `/обновить-brain`.
+- `day_end_screen_v1.md` помечает встречную правку A6 §3.2 как СУЩЕСТВЕННУЮ
+  (при включении DE-5 фаундером): `EmptyState` для `daily_done` обогащается
+  опциональным `next_lesson_preview`, формулировка «без догоняющих» в A6 §3.2
+  пересматривается. A6 в аддендуме НЕ редактировался — ждёт приёмки DE-5 и
+  отдельной правки A6 после неё.
+- `day_end_screen_v1.md` помечает 4 правки контракта данных на приёмку:
+  (1) `LESSON_TITLES` в config.py — обязательное предусловие для полноценного
+  превью с именем урока; (2) `COURSE_BLOCKS` в config.py — опциональная для
+  блочной декомпозиции; (3) `StudentProfile.tz` (правка модели v4 §1) для
+  локального TZ ученика, fail-safe `Europe/Moscow` до приёмки; (4) F-12 «course
+  manifest desync» в v4 §6 — новый failure-режим (до приёмки используется
+  канал F-06).
+- `day_end_screen_v1.md` зависит от незакрытых открытых правок api v1
+  (§3.4 `COURSE_MANIFEST`, §3.4-bis единое пространство `lesson_id`): без
+  их закрытия `course_progress.lessons_passed_total` и
+  `next_lesson_preview.lesson_id` будут возвращать методически нерелевантные
+  значения. Контентный блокер на стороне keeper.py/контент-продюсера
+  (9 файлов вместо 27, `lesson_id="1"` на весь блок) — приёмка фаундера +
+  работа продюсера.
 
 Обновляется вручную при приёмке новой версии спеки. Полную проверку
 консистентности (Brain ↔ Methodology ↔ specs ↔ CLAUDE.md/AGENTS.md) — командой
