@@ -19,6 +19,12 @@ function stubFetch(registrationStatus: number) {
   })
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input)
+    if (url.endsWith('/api/session')) {
+      return new Response(JSON.stringify({ authenticated: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     if (url.endsWith('/api/pd-policy')) {
       return new Response(
         JSON.stringify({
@@ -64,6 +70,75 @@ function stubFetch(registrationStatus: number) {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
+    }
+    return new Response('{}', { status: 404 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+function stubFetchAuthenticatedSession() {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input)
+    if (url.endsWith('/api/session')) {
+      return new Response(
+        JSON.stringify({
+          authenticated: true,
+          role: 'student',
+          fsm_state: 'registered',
+          current_lesson_id: '1_1',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    if (url.endsWith('/api/pd-policy')) {
+      return new Response(
+        JSON.stringify({
+          policy_version: 'v1',
+          policy_url: '/policy',
+          available: true,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    if (url.endsWith('/api/lesson/current')) {
+      return new Response(
+        JSON.stringify({
+          fsm_state: 'registered',
+          view: 'day_hub',
+          message: null,
+          seq: 0,
+          next_actions: [],
+          day: { streak_days: 0, warmup_available: false, has_lesson_today: true },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    if (url.endsWith('/api/day')) {
+      return new Response(
+        JSON.stringify({
+          fsm_state: 'registered',
+          view: 'day_hub',
+          message: null,
+          seq: 0,
+          next_actions: [],
+          day: { streak_days: 0, warmup_available: false, has_lesson_today: true },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    if (url.endsWith('/api/day/open')) {
+      return new Response(
+        JSON.stringify({
+          fsm_state: 'daily_start',
+          view: 'day_hub',
+          message: null,
+          seq: 0,
+          next_actions: [],
+          day: { streak_days: 0, warmup_available: false, has_lesson_today: true },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
     }
     return new Response('{}', { status: 404 })
   })
@@ -138,5 +213,13 @@ describe('Onboarding — поток регистрации', () => {
       // Остаёмся на экране согласия — кнопка «Начать» на месте.
       expect(screen.getByRole('button', { name: 'Начать' })).toBeInTheDocument()
     })
+  })
+
+  it('при refresh с валидной cookie делает re-auth и возвращает в lesson flow', async () => {
+    stubFetchAuthenticatedSession()
+    render(<Onboarding />)
+
+    expect(await screen.findByText('Твой шаг на сегодня')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 })

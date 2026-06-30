@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   ApiError,
+  getSession,
   getPdPolicy,
   submitRegistration,
   type RegistrationSuccess,
@@ -15,6 +16,7 @@ import { transition, type RegEvent, type RegState } from './registrationMachine'
 // ПД на сервер уходят только в submit (152-ФЗ); сам draft на бэкенд не отправляется.
 
 export interface UseRegistration {
+  bootstrapping: boolean
   state: RegState
   name: string
   grade: number | null
@@ -43,6 +45,7 @@ export interface UseRegistration {
 
 export function useRegistration(): UseRegistration {
   const [state, setState] = useState<RegState>('name_entry')
+  const [bootstrapping, setBootstrapping] = useState(true)
   const [name, setNameValue] = useState('')
   const [grade, setGrade] = useState<number | null>(null)
   const [ogeprepAnswer, setOgeprepAnswer] = useState<'yes' | 'no' | null>(null)
@@ -77,6 +80,30 @@ export function useRegistration(): UseRegistration {
   useEffect(() => {
     void refreshPolicy()
   }, [refreshPolicy])
+
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const session = await getSession()
+        if (
+          alive &&
+          session.authenticated &&
+          session.role === 'student' &&
+          session.fsm_state !== undefined
+        ) {
+          setState('registered')
+        }
+      } catch {
+        // Анонимный/недоступный probe не блокирует онбординг.
+      } finally {
+        if (alive) setBootstrapping(false)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
 
   const dispatch = useCallback((event: RegEvent) => {
     setState((current) => transition(current, event) ?? current)
@@ -185,6 +212,7 @@ export function useRegistration(): UseRegistration {
   ])
 
   return {
+    bootstrapping,
     state,
     name,
     grade,

@@ -26,6 +26,13 @@ export interface RegistrationSuccess {
   next: string
 }
 
+export interface SessionProbeResponse {
+  authenticated: boolean
+  role?: string
+  fsm_state?: string
+  current_lesson_id?: string
+}
+
 // Ошибка бэкенда по контракту §5: { error, field } + HTTP-статус.
 export class ApiError extends Error {
   constructor(
@@ -48,6 +55,19 @@ export async function getPdPolicy(): Promise<PdPolicyResponse> {
     throw new ApiError(response.status, body.error ?? 'pd_policy_unavailable')
   }
   return (await response.json()) as PdPolicyResponse
+}
+
+// E2: re-auth по httpOnly-cookie. Нужен для refresh-safe возврата в серверную сессию.
+export async function getSession(): Promise<SessionProbeResponse> {
+  const response = await fetch('/api/session', {
+    headers: { Accept: 'application/json' },
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    const body = await safeJson(response)
+    throw new ApiError(response.status, body.error ?? 'session_probe_failed')
+  }
+  return (await response.json()) as SessionProbeResponse
 }
 
 // E3: единственный submit. Идемпотентность — заголовок Idempotency-Key (§2.2).

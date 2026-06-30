@@ -12,6 +12,10 @@ import { OgeprepCheck } from './registration/OgeprepCheck'
 export function Onboarding() {
   const reg = useRegistration()
 
+  if (reg.bootstrapping) {
+    return <p className="py-8 text-center text-body text-ink-secondary">Загрузка…</p>
+  }
+
   switch (reg.state) {
     case 'name_entry':
       return <NameEntry reg={reg} />
